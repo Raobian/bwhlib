@@ -29,8 +29,10 @@ void show_sd(int sd)
 
 int test_hostlisten()
 {
-        int sd, acc_sd;
+        int sd;
         char port[MAX_BUF_LEN];
+        net_handle_t nh;
+
         snprintf(port, MAX_BUF_LEN, "%u", 17903);
         tcp_sock_hostlisten(&sd, NULL, port, 256, 0, 1);
 
@@ -38,11 +40,11 @@ int test_hostlisten()
 
         printf("listen  port %u\n", port);
         while (1) {
-                tcp_sock_accept_sd(&acc_sd, sd, 0, 0);
-                printf("accept %d\n", acc_sd);
-                show_sd(acc_sd);
+                tcp_sock_accept(&nh, sd, 0, 0);
+                printf("accept %d\n", nh.u.sd.sd);
+                show_sd(nh.u.sd.sd);
                 sleep(3);
-                tcp_sock_close(acc_sd);
+                tcp_sock_close(nh.u.sd.sd);
         }
 
         tcp_sock_close(sd);

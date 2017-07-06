@@ -545,7 +545,7 @@ int tcp_sock_accept(net_handle_t *nh, int srv_sd, int tuning, int nonblock)
         sd = __tcp_accept(srv_sd, (struct sockaddr *)&sin, &alen, 60 / 2);
         if (sd < 0) {
                 ret = -sd;
-                printf("[error] srv_sd %d, %u\n", srv_sd, ret);
+                printf("[error] srv_sd %d, %u, %s\n", srv_sd, ret, strerror(ret));
                 goto err_ret;
         }
 
