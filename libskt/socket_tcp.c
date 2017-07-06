@@ -10,18 +10,9 @@
  * ************************************************************************/
 
 #include <stdio.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/tcp.h>
-#include <netinet/in.h>
-#include <linux/if.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
-#include <netdb.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <assert.h>
 
@@ -138,6 +129,194 @@ err_ret:
         return -ret;
 }
 
+int tcp_sock_tuning(int sd, int tuning, int nonblock)
+{
+        int ret, keepalive, nodelay, oob_inline, xmit_buf, flag;
+        struct linger lin __attribute__((unused));
+        struct timeval tv;
+        socklen_t size;
+
+        if (tuning == 0)
+                return 0;
+
+        flag = fcntl(sd, F_GETFL);
+        if (flag < 0) {
+                ret = errno;
+                goto err_ret;
+        }
+
+        ret = fcntl(sd, F_SETFL, flag | O_CLOEXEC);
+        if (ret < 0) {
+                ret = errno;
+                goto err_ret;
+        }
+
+        /*
+         * If SO_KEEPALIVE is disabled (default), a TCP connection may remain
+         * idle until the connection is released at the protocol layer. If
+         * SO_KEEPALIVE is enabled and the connection has been idle for two
+         * __hours__, TCP sends a packet to the remote socket, expecting the
+         * remote TCP to acknowledge that the connection is still active. If
+         * the remote TCP does not respond in a timely manner, TCP continues to
+         * send keepalive packets according to the normal retransmission
+         * algorithm. If the remote TCP does not respond within a particular
+         * time limit, TCP drops the connection. The next socket system call
+         * (for example, _recv()) returns an error, and errno is set to
+         * ETIMEDOUT.
+         */
+        keepalive = 1;
+        ret = setsockopt(sd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(int));
+        if (ret == -1) {
+                ret = errno;
+                goto err_ret;
+        }
+
+        /*
+         * If l_onoff is zero (the default action), close() returns immediately,
+         * but the system tries to transmit any unsent data and release the
+         * protocol connection gracefully. If l_onoff is non-zero and l_linger
+         * is zero, close() returns immediately, any unsent data is discarded,
+         * and the protocol connection is aborted. If both l_onoff and l_linger
+         * are non-zero, close() does not return until the system has tried to
+         * transmit all unsent data and release the connection gracefully. In
+         * that case, close() can return an error, and errno may be set to
+         * ETIMEDOUT, if the system is unable to transmit the data after a
+         * protocol-defined time limit. Note that the value of l_linger is
+         * treated simply as a boolean; a non-zero value is not interpreted as
+         * a time limit( see _XOPEN_SOURCE_EXTENDED Only below). SO_LINGER does
+         * not affect the actions taken when the function shutdown() is called.
+         */
+        if (nonblock == 1){
+                flag = fcntl(sd, F_GETFL);
+                if (flag == -1) {
+                        ret = errno;
+                        printf("[error] %d - %s\n", ret, strerror(ret));
+                        goto err_ret;
+                }
+
+                if ((flag & O_NONBLOCK) == 0) {
+                        flag = flag | O_NONBLOCK;
+                        ret = fcntl(sd, F_SETFL, flag);
+                        if (ret == -1) {
+                                ret = errno;
+                                printf("[error] %d - %s\n", ret, strerror(ret));
+                                goto err_ret;
+                        }
+                }
+        }
+
+        lin.l_onoff = 1;
+        lin.l_linger = 15;      /* how many seconds to linger for */
+#if 0
+        ret = setsockopt(sd, SOL_SOCKET, SO_LINGER, &lin, sizeof(lin));
+        if (ret == -1) {
+                ret = errno;
+                GOTO(err_ret, ret);
+        }
+#endif
+
+        nodelay = 1;
+
+        ret = setsockopt(sd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(int));
+        if (ret == -1) {
+                ret = errno;
+                if (ret == EOPNOTSUPP) {
+                        //nothing todo;
+                } else
+                        goto err_ret;
+        }
+
+        oob_inline = 1;
+
+        ret = setsockopt(sd, SOL_SOCKET, SO_OOBINLINE, &oob_inline,
+                         sizeof(int));
+        if (ret == -1) {
+                ret = errno;
+                if (ret == EOPNOTSUPP) {
+                        //nothing todo;
+                } else
+                        goto err_ret;
+        }
+
+        tv.tv_sec = 30;
+        tv.tv_usec = 0;
+        ret = setsockopt(sd, SOL_SOCKET, SO_SNDTIMEO, (void *)&tv,
+                         sizeof(struct timeval));
+        if (ret == -1) {
+                ret = errno;
+                printf("[error] %d - %s\n", ret, strerror(ret));
+                goto err_ret;
+        }
+
+        ret = setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, (void *)&tv,
+                         sizeof(struct timeval));
+        if (ret == -1) {
+                ret = errno;
+                printf("[error] %d - %s\n", ret, strerror(ret));
+                goto err_ret;
+        }
+
+        int wmem_max, rmem_max;
+        wmem_max = 1024 * 1024 * 1000;
+        rmem_max = wmem_max;
+        xmit_buf = wmem_max; 
+        ret = setsockopt(sd, SOL_SOCKET, SO_SNDBUF, &xmit_buf, sizeof(int));
+        if (ret == -1) {
+                ret = errno;
+                printf("[error] %d - %s\n", ret, strerror(ret));
+                goto err_ret;
+        }
+
+        xmit_buf = rmem_max;
+        ret = setsockopt(sd, SOL_SOCKET, SO_RCVBUF, &xmit_buf, sizeof(int));
+        if (ret == -1) {
+                ret = errno;
+                printf("[error] %d - %s\n", ret, strerror(ret));
+                goto err_ret;
+        }
+
+        xmit_buf = 0;
+        size = sizeof(int);
+
+        ret = getsockopt(sd, SOL_SOCKET, SO_SNDBUF, &xmit_buf, &size);
+        if (ret == -1) {
+                ret = errno;
+                printf("[error] %d - %s\n", ret, strerror(ret));
+                goto err_ret;
+        }
+
+        if (xmit_buf != wmem_max * 2) {
+                printf("[error] Can't set tcp send buf to %d (got %d)\n",
+                       wmem_max, xmit_buf);
+        }
+
+        printf("send buf %u\n", xmit_buf);
+
+        xmit_buf = 0;
+        size = sizeof(int);
+
+        ret = getsockopt(sd, SOL_SOCKET, SO_RCVBUF, &xmit_buf, &size);
+        if (ret == -1) {
+                ret = errno;
+                printf("[error] %d - %s\n", ret, strerror(ret));
+                goto err_ret;
+        }
+
+        if (xmit_buf != rmem_max * 2) {
+                printf("[error] Can't set tcp recv buf to %d (got %d)\n",
+                       rmem_max, xmit_buf);
+        }
+
+        printf("recv buf %u\n", xmit_buf);
+
+        return 0;
+err_ret:
+        return ret;
+
+}
+
+
+
 int tcp_sock_bind(int *srv_sd, struct sockaddr_in *sin, int nonblock, int tuning)
 {
         int ret, sd, reuse;
@@ -161,9 +340,9 @@ int tcp_sock_bind(int *srv_sd, struct sockaddr_in *sin, int nonblock, int tuning
         }
 
         if (tuning) {
-                /*ret = tcp_sock_tuning(sd, 1, nonblock);*/
-                /*if (ret)*/
-                        /*GOTO(err_sd, ret);*/
+                ret = tcp_sock_tuning(sd, 1, nonblock);
+                if (ret)
+                        goto err_sd;
         }
 
         reuse = 1;
@@ -370,11 +549,9 @@ int tcp_sock_accept(net_handle_t *nh, int srv_sd, int tuning, int nonblock)
                 goto err_ret;
         }
 
-        /*
-         *ret = tcp_sock_tuning(sd, tuning, nonblock);
-         *if (ret)
-         *        goto err_ret;
-         */
+        ret = tcp_sock_tuning(sd, tuning, nonblock);
+        if (ret)
+                goto err_ret;
 
         memset(nh, 0x0, sizeof(*nh));
         nh->type = NET_HANDLE_TRANSIENT;
@@ -404,11 +581,9 @@ int tcp_sock_accept_sd(int *_sd, int srv_sd, int tuning, int nonblock)
                 goto err_ret;
         }
 
-        /*
-         *ret = tcp_sock_tuning(sd, tuning, nonblock);
-         *if (ret)
-         *        goto err_ret;
-         */
+        ret = tcp_sock_tuning(sd, tuning, nonblock);
+        if (ret)
+                goto err_ret;
 
         *_sd = sd;
 
@@ -438,11 +613,9 @@ int tcp_sock_connect(net_handle_t *nh, struct sockaddr_in *sin, int nonblock, in
         }
 
         if (tuning) {
-                /*
-                 *ret = tcp_sock_tuning(sd, 1, nonblock);
-                 *if (ret) {
-                 *        goto err_sd;
-                 */
+                ret = tcp_sock_tuning(sd, 1, nonblock);
+                if (ret) 
+                        goto err_sd;
         }
 
         printf("[debug] new sock %d connected\n", sd);
@@ -516,83 +689,3 @@ err_ret:
 }
 
 
-void show_sd(int sd)
-{
-        unsigned char *p __attribute__((unused));
-        struct sockaddr addr;
-        socklen_t addrlen;
-        getsockname(sd, &addr, &addrlen);
-        p = (unsigned char*)&(((struct sockaddr_in*)&addr)->sin_addr);
-        printf("sd %d, host %d.%d.%d.%d\n", sd, *p, *(p+1), *(p+2), *(p+3));
-}
-
-int test_hostlisten()
-{
-        int tcp_sd;
-        char port[MAX_BUF_LEN];
-        snprintf(port, MAX_BUF_LEN, "%u", 17903);
-        tcp_sock_hostlisten(&tcp_sd, NULL, port, 256, 0, 1);
-
-        show_sd(tcp_sd);
-
-        tcp_sock_close(tcp_sd);
-        
-}
-
-void test_portlisten()
-{
-        int sd, acc_sd;
-        uint32_t port = 0;
-        char host[64];
-        memset(host, 0x0, 64);
-
-        gethostname(host, 64);
-        printf("host %s\n", host);
-
-        tcp_sock_portlisten(&sd, 0, &port, 4, 0);
-        show_sd(sd);
-
-        while (1) {
-                printf("----\n");
-                tcp_sock_accept_sd(&acc_sd, sd, 1, 0);
-                show_sd(acc_sd);
-        }
-
-        tcp_sock_close(sd);
-
-}
-
-void test_connect()
-{
-        net_handle_t *nh;
-        char port[MAX_BUF_LEN];
-        char host[64];
-
-        nh = (net_handle_t *)malloc(sizeof(net_handle_t));
-        memset(nh, 0x0, sizeof(net_handle_t));
-
-        snprintf(port, MAX_BUF_LEN, "%u", 17903);
-
-        memset(host, 0x0, 64);
-        gethostname(host, 64);
-
-        printf("connect to %s:%s\n", host, port);
-
-        tcp_sock_hostconnect(nh, host, port, 0, 60, 1);
-        sleep(3);
-        printf("nh.u.sd.sd %d\n", nh->u.sd.sd);
-        tcp_sock_close(nh->u.sd.sd);
-        
-}
-
-int main(int argc, char *argv[])
-{
-        if (argc > 1 && !strcmp(argv[1], "ser")) {
-                printf("run as ser\n");
-                test_portlisten();
-        } else {
-               test_connect(); 
-        }
-
-        return 0;
-}
